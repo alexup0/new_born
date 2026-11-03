@@ -18,9 +18,9 @@
   --vh:100vh;
 }
 *{box-sizing:border-box;margin:0;padding:0}
-html{scroll-snap-type:y proximity;background:#d9d3cb}
-body{font-family:var(--sans);color:var(--ink);background:#d9d3cb;-webkit-font-smoothing:antialiased;overscroll-behavior-y:none}
-.snap{height:var(--vh);scroll-snap-align:start}
+html,body{height:100%;overflow:hidden;overscroll-behavior:none}
+html{background:#d9d3cb}
+body{font-family:var(--sans);color:var(--ink);background:#d9d3cb;-webkit-font-smoothing:antialiased;touch-action:none;-webkit-user-select:none;user-select:none}
 #stage{position:fixed;inset:0;height:var(--vh);perspective:2200px;perspective-origin:0% 50%;overflow:hidden}
 
 .page{position:absolute;inset:0;background:var(--paper);transform-origin:0% 50%;backface-visibility:hidden;-webkit-backface-visibility:hidden;will-change:transform;overflow:hidden;
@@ -127,7 +127,7 @@ body{font-family:var(--sans);color:var(--ink);background:#d9d3cb;-webkit-font-sm
   .post p{font-size:15.5px;line-height:1.42}
   .post .cap{margin-top:8px}
   .quote{font-size:17px;margin-bottom:10px}
-  .textpage{grid-template-columns:1fr;gap:18px;padding:26px 18px 48px;overflow:auto}
+  .textpage{grid-template-columns:1fr;gap:18px;padding:26px 18px 48px;overflow:hidden}
   .letter p{font-size:16.5px}
   .h-big{font-size:clamp(38px,11vw,60px)}
   .stat-row{margin-top:14px}
@@ -335,80 +335,124 @@ body{font-family:var(--sans);color:var(--ink);background:#d9d3cb;-webkit-font-sm
 
 </div>
 
-<div id="scroller"></div>
 <div id="nav"><button id="prev" aria-label="Предыдущая страница">←</button><button id="next" aria-label="Следующая страница">→</button></div>
 <div id="lb" role="dialog" aria-label="Фото крупно"><img alt=""></div>
 
 <script>
 (function(){
   const pages=[...document.querySelectorAll('.page')];
-  const N=pages.length, scroller=document.getElementById('scroller');
+  const N=pages.length;
   const bar=document.getElementById('bar'), counter=document.getElementById('counter');
   const reduce=matchMedia('(prefers-reduced-motion: reduce)').matches;
-  let vh=innerHeight;
+  let vh=innerHeight, pos=0, cur=0, anim=null, lockUntil=0;
 
-  pages.forEach((p,i)=>{
-    p.style.zIndex=N-i;
-    p.insertAdjacentHTML('beforeend','<div class="shade"></div><div class="under"></div>');
-    const s=document.createElement('div');s.className='snap';scroller.appendChild(s);
-  });
+  pages.forEach((p,i)=>{p.style.zIndex=N-i;p.insertAdjacentHTML('beforeend','<div class="shade"></div><div class="under"></div>')});
 
-  // table of contents
   const toc=document.getElementById('toc');
   pages.forEach((p,i)=>{
     if(!p.dataset.rubric) return;
     const li=document.createElement('li');
     li.innerHTML='<span class="n">'+String(i+1).padStart(2,'0')+'</span><span class="t">'+p.dataset.title+'</span><span class="r">'+p.dataset.rubric+'</span>';
-    li.onclick=()=>go(i); toc.appendChild(li);
+    li.addEventListener('click',()=>go(i)); toc.appendChild(li);
   });
 
-  function size(){
-    vh=innerHeight;
-    document.documentElement.style.setProperty('--vh',vh+'px');
-    render();
-  }
-  function go(i){scrollTo({top:Math.max(0,Math.min(N-1,i))*vh,behavior:reduce?'auto':'smooth'})}
-
-  function render(){
-    const p=Math.min(N-1,Math.max(0,scrollY/vh));
+  function render(p){
     pages.forEach((el,i)=>{
       const d=i-p, shade=el.querySelector('.shade'), under=el.querySelector('.under');
       if(d<=-1 || d>=1){el.style.visibility='hidden';return}
       el.style.visibility='visible';
-      if(d<0){ // turning away around the left edge (spine)
-        const t=-d;
-        el.style.transform=reduce?'none':'rotateY('+(-92*t)+'deg)';
+      if(d<0){const t=-d;
+        el.style.transform=reduce?'none':'rotateY('+(-95*t)+'deg)';
         el.style.opacity=reduce?(1-t):1;
-        shade.style.opacity=t*1.1; under.style.opacity=0;
-      }else{ // waiting underneath
+        shade.style.opacity=Math.min(1,t*1.15); under.style.opacity=0;
+      }else{
         el.style.transform=reduce?'none':'scale('+(1-0.035*d)+')';
-        el.style.opacity=1;
-        shade.style.opacity=0; under.style.opacity=d*0.55;
+        el.style.opacity=1; shade.style.opacity=0; under.style.opacity=d*0.5;
       }
     });
     bar.style.width=(p/(N-1)*100)+'%';
     counter.textContent=String(Math.round(p)+1).padStart(2,'0')+' / '+String(N).padStart(2,'0');
   }
 
-  let ticking=false;
-  addEventListener('scroll',()=>{if(!ticking){ticking=true;requestAnimationFrame(()=>{render();ticking=false})}},{passive:true});
-  addEventListener('resize',size);
-  addEventListener('keydown',e=>{
-    const cur=Math.round(scrollY/vh);
-    if(['ArrowRight','ArrowDown','PageDown',' '].includes(e.key)){e.preventDefault();go(cur+1)}
-    if(['ArrowLeft','ArrowUp','PageUp'].includes(e.key)){e.preventDefault();go(cur-1)}
-    if(e.key==='Escape') lb.classList.remove('on');
-  });
-  document.getElementById('next').onclick=()=>go(Math.round(scrollY/vh)+1);
-  document.getElementById('prev').onclick=()=>go(Math.round(scrollY/vh)-1);
+  const ease=t=>t<.5?4*t*t*t:1-Math.pow(-2*t+2,3)/2; // easeInOutCubic
+  function animateTo(target){
+    target=Math.max(0,Math.min(N-1,target));
+    cancelAnimationFrame(anim);
+    const from=pos, dist=target-from;
+    if(Math.abs(dist)<0.001){pos=target;render(pos);return}
+    const dur=reduce?250:Math.min(1400,Math.max(520,850*Math.abs(dist)**.6));
+    const t0=performance.now();
+    lockUntil=t0+dur*0.85;
+    (function step(now){
+      const k=Math.min(1,(now-t0)/dur);
+      pos=from+dist*ease(k); render(pos);
+      if(k<1) anim=requestAnimationFrame(step); else {pos=target;cur=target;render(pos)}
+    })(t0);
+    cur=target;
+  }
+  function go(i){animateTo(i)}
+  const next=()=>go(cur+1), prev=()=>go(cur-1);
 
-  // lightbox
+  // wheel / trackpad: one gesture = one page
+  let wheelAcc=0, wheelIdle;
+  addEventListener('wheel',e=>{
+    e.preventDefault();
+    if(lb.classList.contains('on')) return;
+    clearTimeout(wheelIdle); wheelIdle=setTimeout(()=>{wheelAcc=0},180);
+    if(performance.now()<lockUntil){wheelAcc=0;return}
+    wheelAcc+=e.deltaY+e.deltaX;
+    if(wheelAcc>40){wheelAcc=0;next()} else if(wheelAcc<-40){wheelAcc=0;prev()}
+  },{passive:false});
+
+  // touch: page follows finger, release turns exactly one page
+  let ty=null, tx=0, tt=0, startPos=0, dragging=false;
+  addEventListener('touchstart',e=>{
+    if(lb.classList.contains('on')) return;
+    const t=e.touches[0]; ty=t.clientY; tx=t.clientX; tt=performance.now();
+    cancelAnimationFrame(anim); startPos=cur; pos=Math.round(pos*1000)/1000; startPos=pos; dragging=false;
+  },{passive:true});
+  addEventListener('touchmove',e=>{
+    if(ty===null) return;
+    const t=e.touches[0], dy=ty-t.clientY, dx=tx-t.clientX;
+    const d=Math.abs(dy)>=Math.abs(dx)?dy:dx;
+    if(!dragging && Math.abs(d)<6) return;
+    dragging=true; e.preventDefault();
+    let p=startPos+d/(vh*0.9);
+    const base=Math.round(startPos);
+    p=Math.max(base-1,Math.min(base+1,p));      // never more than one page per swipe
+    p=Math.max(0,Math.min(N-1,p));
+    pos=p; render(pos);
+  },{passive:false});
+  addEventListener('touchend',e=>{
+    if(ty===null) return;
+    const base=Math.round(startPos), moved=pos-base, dtm=performance.now()-tt;
+    ty=null;
+    if(!dragging) return;
+    const fast=dtm<350 && Math.abs(moved)>0.04;
+    let target=base;
+    if(moved>0.18 || (fast&&moved>0)) target=base+1;
+    else if(moved<-0.18 || (fast&&moved<0)) target=base-1;
+    animateTo(target);
+  });
+
+  addEventListener('keydown',e=>{
+    if(e.key==='Escape'){lb.classList.remove('on');return}
+    if(['ArrowRight','ArrowDown','PageDown',' '].includes(e.key)){e.preventDefault();next()}
+    if(['ArrowLeft','ArrowUp','PageUp'].includes(e.key)){e.preventDefault();prev()}
+    if(e.key==='Home') go(0); if(e.key==='End') go(N-1);
+  });
+  document.getElementById('next').onclick=next;
+  document.getElementById('prev').onclick=prev;
+
   const lb=document.getElementById('lb'), lbImg=lb.querySelector('img');
   document.querySelectorAll('.shot').forEach(s=>s.addEventListener('click',()=>{
+    if(dragging) return;
     const im=s.querySelector('img');lbImg.src=im.src;lbImg.alt=im.alt;lb.classList.add('on');
   }));
   lb.onclick=()=>lb.classList.remove('on');
 
+  function size(){vh=innerHeight;document.documentElement.style.setProperty('--vh',vh+'px');render(pos)}
+  addEventListener('resize',size);
   size();
 })();
 </script>
